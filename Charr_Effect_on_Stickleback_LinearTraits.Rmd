@@ -1,0 +1,503 @@
+---
+title: "The effect of charr presence on stickleback phenotypes (linear traits)"
+output:
+  github_document:
+    html_preview: false
+  pdf_document:
+    df_print: kable
+  html_notebook:
+    fig_caption: yes
+    df_print: paged
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook for the analysis of arctic charr's effect on threespine stickleback morphology (linear traits). 
+
+First we prepare our libraries and working directory. 
+```{r, include=FALSE}
+rm(list=ls())
+
+library(readr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(stringr)
+library(vegan)
+library(plyr)
+library(car)
+library(ade4)
+library(data.table)
+library(ggord)
+library(ggfortify)
+library(heplots)
+library(ggpubr)
+library(ggrepel)
+library(emmeans)
+library(see)
+library(performance)
+library(qqplotr)
+
+```
+
+Read in landmark data from three sets of photographs: dorsal view, lateral view with open mouth, and lateral view with closed mouth. Most of the traits are measured from the lateral open mouth photographs, however some functional trait systems are characterized by measurements of traits from the multiple angles or positions.
+```{r}
+# Data - Coordinates are saved in three different files (dorsal, closed, - open-mouthed)
+Closed <- read.csv("GL19_Closed_Coord_Char.csv")
+Open   <- read.csv("GL19_Open_Coord_Char.csv")
+Dorsal   <- read.csv("GL19_Dorsal_Coord_Char.csv")
+```
+
+We create a function to measure linear distances for each trait (defined by the distance between two relevant landmarks) from the three photograph sets using the pythagorean theorem and then convert from pixels to mm using a size standard that was included in each photograph. 
+```{r}
+ distanceLM <- function(lm1,lm2) {
+  X1 <- Xvalues[,lm1]
+  X2 <- Xvalues[,lm2]
+  Y1 <- Yvalues[,lm1]
+  Y2 <- Yvalues[,lm2]
+  distance1 <- sqrt((X1-X2)^2+(Y1-Y2)^2)/Traits$V2 
+  return(distance1)
+}  
+```
+
+
+First, we calculate the measurements of traits associated with foraging morphology from the dorsal photographs.
+```{r}
+   str(Dorsal)
+
+   Traits <- Dorsal[,c(1,2,4)]
+   Xvalues <- Dorsal [,c(5:9)] # get all x values
+   Yvalues <- Dorsal [,c(10:14)] # get all y values 
+   
+   Traits$EpaxWidth <- as.numeric(unlist(distanceLM(4,5)))  #Width of the epaxial muscle
+   Dorsal_traits <- Traits[,c(1,4)] 
+```
+
+Then the open mouthed photographs.
+```{r}
+str(Open)
+   
+   Traits <- Open[,c(1,2,4)]
+   Xvalues <- Open [,c(5:23)] # get all x values
+   Yvalues <- Open [,c(24:42)] # get all y values 
+   
+   Traits$Gape <- as.numeric(unlist(distanceLM(1,2)))         
+   Traits$Buccal_length <- as.numeric(unlist(distanceLM(1,6)))
+   Traits$Neuro_Outlever <- as.numeric(unlist(distanceLM(1,7)))
+   Traits$Jaw_Outlever <- as.numeric(unlist(distanceLM(4,2)))
+   Traits$Jaw_Inlever <- as.numeric(unlist(distanceLM(4,5)))
+   Traits$Epax_height_open <- as.numeric(unlist(distanceLM(8,7)))
+   
+   Open_traits <- Traits[,c(1,4:9)] 
+```
+
+Lastly, the closed mouth photos.
+```{r}
+str(Closed)
+   
+   Traits <- Closed[,c(1,2,3,5)]
+   Xvalues <- Closed [,c(6:30)] # get all x values
+   Yvalues <- Closed [,c(31:55)] # get all y values 
+   
+   Traits$StLen <- as.numeric(unlist(distanceLM(1,25)))  #standard length of fish
+   Traits$Epax_height_closed <- as.numeric(unlist(distanceLM(9,10)))
+   Traits$Coupler <- as.numeric(unlist(distanceLM(2,11)))
+   Traits$Fixed <- as.numeric(unlist(distanceLM(3,7)))
+   Traits$Input <- as.numeric(unlist(distanceLM(7,11)))
+   Traits$Output <- as.numeric(unlist(distanceLM(2,3)))
+   Traits$Diagonal <- as.numeric(unlist(distanceLM(3,11)))
+   Traits$BodyDepth <- as.numeric(unlist(distanceLM(13,16)))
+   Traits$HeadLen <- as.numeric(unlist(distanceLM(1,7)))  #length of the head
+   Traits$EyeDiam <- as.numeric(unlist(distanceLM(4,6)))  
+
+   
+   Closed_traits <- Traits[,c(1,3,5:14)] 
+```
+
+Now we calculate measurements of other traits that will not go into calculation of functional systems from landmarks on the open mouthed photos.
+```{r}
+   str(Open)
+   
+   Traits <- Open[,c(1,2,4)]
+   Xvalues <- Open [,c(5:23)] # get all x values
+   Yvalues <- Open [,c(24:42)] # get all y values 
+   
+   Traits$Jaw_prot <- as.numeric(unlist(distanceLM(1,3)))
+   Traits$Spine1_L <- as.numeric(unlist(distanceLM(9,10)))
+   Traits$Spine2_L <- as.numeric(unlist(distanceLM(11,13)))
+   Traits$Spine2_W <- as.numeric(unlist(distanceLM(11,12)))
+   Traits$PelvSpine_L <- as.numeric(unlist(distanceLM(17,19)))
+   Traits$PelvSpine_W <- as.numeric(unlist(distanceLM(17,18)))
+   Traits$AscProc_W <- as.numeric(unlist(distanceLM(15,16)))
+   Traits$AscProc_L <- as.numeric(unlist(distanceLM(14,18)))
+   
+   Other_traits <- Traits[,c(1,4:11)] 
+```
+
+Now that we've got each set of linear trait measurements (in mm thanks to our function), we can combine them all into a single data frame based on the specimen ID number.
+```{r}
+   Linear_traits <- Closed_traits %>% 
+   left_join(Open_traits, by = "FishEc", all=T) %>% 
+   left_join(Dorsal_traits, by = "FishEc", all=T) %>% 
+   left_join(Other_traits, by = "FishEc", all=T)
+```
+
+Read in a file that contains the source location for each sample and add this to our trait data frame.
+```{r}
+   Fish_info <- read_csv("Fishec_Fish_2019.csv")
+   
+   All_traits <- Fish_info %>% 
+     filter(Type == "Fish") %>%
+     select(Site, FishEc) %>% 
+     right_join(Linear_traits, by = "FishEc", all=T)
+```
+
+Retain only specimens with a standard length greater than 25 mm, as smaller individuals are either juveniles or heavily warped specimens. Also remove specimens with missing measurements
+```{r}
+All_traits <- All_traits %>% 
+     filter(StLen >= 25)
+
+All_traits <- na.omit(All_traits)
+```
+
+Inspect the relationship between standard length and each of our traits (log transformed for normality) to determine if size standardization is required.
+```{r, fig.width = 20, fig.height = 20}
+   All_traits %>% 
+     filter(Quality != "b") %>% 
+     pivot_longer(cols = "Epax_height_closed":"AscProc_L" ,  names_to = "Trait", values_to = "Trait_value" ) %>% 
+     ggplot(aes(x=(log10(StLen)), y=(log10(Trait_value)), color=Site, label = FishEc))+
+     geom_point()+
+     geom_smooth(method = "lm", se=F)+
+     facet_wrap(~Trait, scales = "free")
+```
+
+All traits clearly covary with standard length, so we need to size standardize the linear measurements that do not go into calculating functional systems (functional systems are measured as ratios, so size standardization is not required). We will standardize each of these measurement to a common standard body length within each population (because while the overall slopes of the relationship between traits and SL look similar across populations, the intercepts differ a bit) using the below code.
+```{r}
+     traits <- data.matrix(All_traits[,c(11:13,21:28)])
+     L <- as.vector(colnames(traits))
+     O = lapply(L, function(column)  {
+       All_traitsI <- All_traits[,c("StLen","Site")]
+       All_traitsI$trait <- traits[,column ]
+       Model <- lm(log10(trait)~log10(StLen)+Site, data=All_traitsI)
+       All_traitsI$Resid <- residuals(Model)
+       Standard_size <- data.frame(StLen=c(45,45,45,45,45,45,45,45,45,45,45,45,45,45,45,45), 
+                                   Site = c("AK8","AL4","ERL001","ERL125","ERL137","ERL138","ERL033",
+                                            "ERL006","ERL067","ERL084","L26","TUL10","TUL8","TULX8","TUP19","Marine"))   # This dataframe helps to find the estimated trait values for some arbitrary standardized size
+       Standard_size$Mean_pred_trait<- predict(Model, newdata=Standard_size)
+       All_traitsI <- right_join(All_traitsI, Standard_size[,2:3], by = "Site")
+       trait_cor <- as.data.frame(10^(All_traitsI$Mean_pred_trait + All_traitsI$Resid))
+       colnames(trait_cor) <- paste(column, "cor", sep = "_")
+       return(trait_cor)})
+     Traits_cor <- do.call(cbind, O)
+```
+
+Now we create a reduced data frame with our newly size corrected traits and the original traits for the functional systems we will calculate later.
+```{r}
+ SizeCorrected_Traits <- cbind(All_traits[c(1:2,4)], Traits_cor)
+```
+
+Using the remaining unstandardized linear traits, we will calculate a set of composite traits representing functional trait systems involved with foraging in fishes.
+```{r}
+##Suction Index
+     CSA = (pi*(All_traits$Epax_height_open*All_traits$EpaxWidth/2)/2) 
+     SizeCorrected_Traits$Suction_index = (CSA*(All_traits$Epax_height_open/All_traits$Neuro_Outlever))/(All_traits$Gape*All_traits$Buccal_length)
+    
+     
+##Four-bar linkage
+     Oin_start <-  acos((All_traits$Fixed^2+All_traits$Input^2-All_traits$Diagonal^2)/(2*All_traits$Fixed*All_traits$Input))
+     O1_start  <-  acos((All_traits$Fixed^2 + All_traits$Diagonal^2 - All_traits$Input^2)/(2*All_traits$Fixed*All_traits$Diagonal))
+     O2_start  <-  acos((All_traits$Output^2 + All_traits$Diagonal^2 - All_traits$Coupler^2)/(2*All_traits$Output*All_traits$Diagonal))
+     out_start <-  O1_start+O2_start 
+     Oin_end <- Oin_start + ((2*pi*5)/360)
+     Dend <- sqrt(All_traits$Input^2+All_traits$Fixed^2-2*All_traits$Input*All_traits$Fixed*cos(Oin_end))
+     O1_end  <-  acos((All_traits$Fixed^2 + Dend^2 - All_traits$Input^2)/(2*All_traits$Fixed*Dend))
+     O2_end  <-  acos((All_traits$Output^2 + Dend^2 - All_traits$Coupler^2)/(2*All_traits$Output*Dend))
+     out_end <-  O1_end+O2_end
+     SizeCorrected_Traits$KT <- abs(out_start-out_end)/(((2*pi*5)/360))
+     
+     
+##Displacement advantage
+     SizeCorrected_Traits$Disp_adv = All_traits$Jaw_Outlever/All_traits$Jaw_Inlever 
+```
+
+Log transform our final trait set
+```{r}
+     cols <- c(names(SizeCorrected_Traits[c(3:17)]))
+     
+     setDT(SizeCorrected_Traits)[, paste0("log_", cols) := lapply(.SD, log10), .SDcols = cols]
+     
+     FinalTraits <- SizeCorrected_Traits[,c(1:2,18:32)]
+```
+
+
+Now we have our data ready for analysis. Let's look at how many specimens we have remaining for each sampling location.
+```{r}
+FinalTraits %>% group_by(Site) %>% tally()
+```
+
+Use PCA to look for overall patterns of trait covariation across freshwater populations.
+```{r}
+Data <- as.data.frame(na.omit(FinalTraits)) #PCA won't work with missing data, so we remove an individual where one of the functional systems could not be calculated from the photographs
+
+Data<-Data[!(Data$Site=="Marine"),] #remove the marine population
+
+pca<-prcomp(Data[,c(4:17)])
+summary(pca) # print variance accounted for by each axis
+```
+
+Let's take a look at what traits load highly onto each axis.
+```{r}
+pca$rotation 
+loads <-with(pca, unclass(rotation))
+```
+
+
+Now let's see how many PC axes are needed to explain the majority of trait variation (based either on >90% variance explained or eigenvalues >1).
+```{r, fig.width = 8, fig.height = 6}
+plot(pca,type="lines") # scree plot
+pr.cvar <- pca$sdev ^ 2 # Calculate eigen value for each component
+round(pr.cvar, 4) # Eigen values 
+mean(pr.cvar)
+pve_cov <- pr.cvar/sum(pr.cvar) # Variance explained by each principal component: pve
+pve_cov
+```
+
+
+Add PC scores to our data sheet.
+```{r}
+scores <- pca$x
+scores <- data.frame(scores)
+Data <- cbind(Data, scores)
+names(Data)
+```
+
+Load in environmental information for each site and add this to our data sheet.
+```{r}
+LakeInfo <- read.csv("GL_Lake_Master.csv")
+LakeInfo<-LakeInfo[(LakeInfo$Year=="2019"),] #data for sampling year
+LakeInfo <- LakeInfo[, c(2,11,12,14)] #subset to relevant info
+Data   <- merge(LakeInfo, Data, by.x = ("Lake"), by.y = ("Site"), all.y = TRUE)
+colnames(Data)[1] <- "Site"
+#write.csv(Data, "LinearTraitPCScores.csv")
+```
+
+Now that we have all of our relevant information in one place, we plot the PCA results for all individuals, colored by habitat type.
+```{r, fig.width = 8, fig.height = 6}
+ggplot(Data, aes(PC1, PC2, shape=Fish, color=Fish, size=Areaha)) + geom_point() + 
+  theme_classic() + scale_color_manual(values=c( "#016450", "#67a9cf")) 
+```
+
+That's a bit too messy to see anything beyond the overal patter of some separation by habitat characteristics along PC1. Let's calculate population averages for these two PCs and replot the data.
+```{r}
+gd <- Data %>% 
+  dplyr::group_by(Site) %>% # Group the data by sample site
+  dplyr::summarize(mean_Comp1=mean(PC1), # Create variable with mean of PC per group
+            mean_Comp2=mean(PC2),
+            mean_Comp3=mean(PC3),
+            mean_Comp4=mean(PC4),
+            sd_Comp.1=sd(PC1), # Create variable with sd of PC per group
+            sd_Comp.2=sd(PC2),
+            sd_Comp.3=sd(PC3),
+            sd_Comp.4=sd(PC4),
+            N_PC=n(), # Create new variable N of PC per group
+            se1=sd_Comp.1/sqrt(N_PC), # Create variable with se of PC per group
+            se2=sd_Comp.2/sqrt(N_PC), 
+            se3=sd_Comp.3/sqrt(N_PC),
+            se4=sd_Comp.4/sqrt(N_PC),
+            upper_limit1=mean_Comp1+se1, # Upper limit
+            lower_limit1=mean_Comp1-se1, # Lower limit
+            upper_limit2=mean_Comp2+se2, # Upper limit
+            lower_limit2=mean_Comp2-se2, # Lower limit
+            upper_limit3=mean_Comp3+se3, # Upper limit
+            lower_limit3=mean_Comp3-se3, # Lower limit
+            upper_limit4=mean_Comp4+se4, # Upper limit
+            lower_limit4=mean_Comp4-se4 # Lower limit
+  ) 
+
+gd   <- merge(LakeInfo, gd, by.x = ("Lake"), by.y = ("Site"), all.y = TRUE)
+colnames(gd)[5] <- "PC1"
+colnames(gd)[6] <- "PC2"
+colnames(gd)[7] <- "PC3"
+colnames(gd)[8] <- "PC4"
+
+
+gd
+```
+
+
+PC1 vs PC2
+```{r, fig.width = 8, fig.height = 6}
+b <-  autoplot(pca, data = Data, colour = 'Fish', fill ='Fish',
+           loadings = TRUE, loadings.colour = 'black', shape = 'Fish', label = F,
+           loadings.label = T, scale = 0.4, alpha=0, loadings.label.repel=F)
+b  
+
+b <- b + geom_errorbar(data=gd, aes(ymin=lower_limit2, ymax=upper_limit2))+
+    geom_errorbarh(data=gd, aes(xmin = lower_limit1,xmax = upper_limit1)) +
+    geom_point(data=gd, aes(PC1, PC2, shape=Fish, color=Fish, size = Areaha)) + 
+    theme_pubr() + geom_text(data = gd, aes(label=Lake)) +
+    scale_color_manual(values=c( "#016450", "#67a9cf")) + 
+    xlab(paste0("PC1 (",round((100*pve_cov[1]),2), "%)")) +
+    ylab(paste0("PC2 (", round((100*pve_cov[2]),2), "%)"))
+
+b
+```
+
+PC3 and PC4 
+```{r, fig.width = 8, fig.height = 6}
+b <-  autoplot(pca, x=3, y=4, data = Data, colour = 'Fish', fill ='Fish',
+           loadings = TRUE, loadings.colour = 'black', shape = 'Fish', label = F,
+           loadings.label = T, scale = 0.4, alpha=0, loadings.label.repel=F)
+b  
+
+b <- b + geom_errorbar(data=gd, aes(ymin=lower_limit4, ymax=upper_limit4)) +
+    geom_errorbarh(data=gd, aes(xmin = lower_limit3,xmax = upper_limit3)) +
+    geom_point(data=gd, aes(PC3, PC4, shape=Fish, color=Fish, size = Areaha)) + theme_pubr() +
+    geom_text(data = gd, aes(label=Lake)) +
+    scale_color_manual(values=c( "#016450", "#67a9cf")) + 
+    xlab(paste0("PC3 (", round((100*pve_cov[3]),2), "%)")) + 
+    ylab(paste0("PC4 (", round((100*pve_cov[4]),2), "%)"))
+
+b
+```
+
+
+Plots without the loadings getting in the way.
+```{r, fig.width = 8, fig.height = 6}
+b <- ggplot(data=gd, aes(PC1, PC2)) + 
+    geom_errorbar(data=gd, aes(ymin=lower_limit2, ymax=upper_limit2)) +
+    geom_errorbarh(data=gd, aes(xmin = lower_limit1,xmax = upper_limit1, height=0.01)) +
+    geom_point(data=gd, aes(PC1, PC2, shape=Fish, color=Fish, size = Areaha)) + theme_pubr() +
+    geom_text_repel(data = gd, aes(label=Lake)) +
+    scale_color_manual(values=c( "#016450", "#67a9cf")) + 
+    xlab(paste0("PC1 (", round((100*pve_cov[1]),2), "%)")) + 
+    ylab(paste0("PC2 (", round((100*pve_cov[2]),2), "%)"))
+
+b
+
+b <- ggplot(data=gd, aes(PC3, PC4)) + 
+    geom_errorbar(data=gd, aes(ymin=lower_limit4, ymax=upper_limit4)) +
+    geom_errorbarh(data=gd, aes(xmin = lower_limit3,xmax = upper_limit3)) +
+    geom_point(data=gd, aes(PC3, PC4, shape=Fish, color=Fish, size = Areaha)) + theme_pubr() +
+    geom_text(data = gd, aes(label=Lake)) +
+    scale_color_manual(values=c( "#016450", "#67a9cf")) + 
+    xlab(paste0("PC3 (", round((100*pve_cov[3]),2), "%)")) + 
+    ylab(paste0("PC4 (", round((100*pve_cov[4]),2), "%)"))
+
+b
+```
+
+
+
+
+
+Test if there is significant multivariate phenotypic differences (PC scores) among lakes using MANCOVA.
+```{r}
+model.full <- lm(cbind(PC1, PC2, PC3,PC4,PC5) ~ log_StLen + Fish + Areaha + 
+                   log_StLen*Fish + log_StLen*Areaha + Areaha*Fish + 
+                   log_StLen*Fish*Areaha, data=Data)
+fit <- Manova(model.full, type="III", test.statistic="Wilks")
+fit
+EtaSq <- etasq(model.full, test = "Wilks", anova = TRUE, partial = TRUE)
+EtaSq
+```
+
+
+PCA with Marine fish to see relative trait divergence.
+```{r}
+Data1 <- as.data.frame(na.omit(FinalTraits)) #PCA won't work with missing data, so we remove an individual where one of the functional systems could not be calculated from the photographs
+pca1<-prcomp(Data1[,c(4:17)])
+summary(pca1) # print variance accounted for by each axis
+
+plot(pca1,type="lines") # scree plot
+pr.cvar1 <- pca1$sdev ^ 2 # Calculate eigen value for each component
+round(pr.cvar1, 2) # Eigen values 
+mean(pr.cvar1)
+pve_cov1 <- pr.cvar1/sum(pr.cvar1) # Variance explained by each principal component: pve
+pve_cov1
+
+scores1 <- pca1$x
+scores1 <- data.frame(scores1)
+Data1 <- cbind(Data1, scores1)
+names(Data1)
+
+Data1   <- merge(LakeInfo, Data1, by.x = ("Lake"), by.y = ("Site"), all.y = TRUE)
+colnames(Data1)[1] <- "Site"
+
+
+
+gd1 <- Data1 %>% 
+  dplyr::group_by(Site) %>% # Group the data by sample site
+  dplyr::summarize(mean_Comp1=mean(PC1), # Create variable with mean of PC per group
+            mean_Comp2=mean(PC2),
+            mean_Comp3=mean(PC3),
+            mean_Comp4=mean(PC4),
+            sd_Comp.1=sd(PC1), # Create variable with sd of PC per group
+            sd_Comp.2=sd(PC2),
+            sd_Comp.3=sd(PC3),
+            sd_Comp.4=sd(PC4),
+            N_PC=n(), # Create new variable N of PC per group
+            se1=sd_Comp.1/sqrt(N_PC), # Create variable with se of PC per group
+            se2=sd_Comp.2/sqrt(N_PC), 
+            se3=sd_Comp.3/sqrt(N_PC),
+            se4=sd_Comp.4/sqrt(N_PC),
+            upper_limit1=mean_Comp1+se1, # Upper limit
+            lower_limit1=mean_Comp1-se1, # Lower limit
+            upper_limit2=mean_Comp2+se2, # Upper limit
+            lower_limit2=mean_Comp2-se2, # Lower limit
+            upper_limit3=mean_Comp3+se3, # Upper limit
+            lower_limit3=mean_Comp3-se3, # Lower limit
+            upper_limit4=mean_Comp4+se4, # Upper limit
+            lower_limit4=mean_Comp4-se4 # Lower limit
+  ) 
+
+gd1   <- merge(LakeInfo, gd1, by.x = ("Lake"), by.y = ("Site"), all.y = TRUE)
+colnames(gd1)[5] <- "PC1"
+colnames(gd1)[6] <- "PC2"
+colnames(gd1)[7] <- "PC3"
+colnames(gd1)[8] <- "PC4"
+
+
+b <- ggplot(data=gd1, aes(PC1, PC2)) + 
+    geom_errorbar(data=gd1, aes(ymin=lower_limit2, ymax=upper_limit2)) +
+    geom_errorbarh(data=gd1, aes(xmin = lower_limit1,xmax = upper_limit1, height=0.01)) +
+    geom_point(data=gd1, aes(PC1, PC2, shape=Fish, fill=Fish, size = 6), colour="black") + theme_pubr() +
+    scale_shape_manual(values=c(22, 25, 24)) +
+    scale_fill_manual(values=c("#67a9cf", "#016265","#01C8AC")) + 
+    xlab(paste0("PC1 (", round((100*pve_cov1[1]),2), "%)")) + 
+    ylab(paste0("PC2 (", round((100*pve_cov1[2]),2), "%)"))
+
+b
+
+b <- ggplot(data=gd1, aes(PC1, PC2)) + 
+    geom_errorbar(data=gd1, aes(ymin=lower_limit2, ymax=upper_limit2)) +
+    geom_errorbarh(data=gd1, aes(xmin = lower_limit1,xmax = upper_limit1, height=0.01)) +
+    geom_point(data=gd1, aes(PC1, PC2, shape=Fish, fill=Fish, size = Areaha), colour="black") + theme_pubr() +
+    scale_shape_manual(values=c(22, 25, 24)) +
+    scale_fill_manual(values=c("#67a9cf", "#016265","#01C8AC")) + 
+    xlab(paste0("PC1 (", round((100*pve_cov1[1]),2), "%)")) + 
+    ylab(paste0("PC2 (", round((100*pve_cov1[2]),2), "%)"))
+
+b
+
+```
+
+
+
+exploratory stuff
+```{r}
+ggplot(data = Data, aes(x=Fish,y=log_PelvSpine_L_cor,fill=Site)) + geom_boxplot()+ theme_pubr() 
+ggplot(data = Data, aes(x=reorder(Site,log_PelvSpine_L_cor),y=log_PelvSpine_L_cor,fill=Fish)) + geom_boxplot()+ theme_pubr() + 
+  scale_fill_manual(values=c( "#016265", "#01C8AC", "#67a9cf","#fc8d59")) + facet_grid(.~Fish, scales = "free", space = "free") +
+  theme(strip.background = element_blank(), strip.text.x = element_blank())
+
+```
+
+
+
+
+
+
+
